@@ -1100,3 +1100,9 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+## 輸出偏好（互動約定）
+
+- 當回覆中提到「結論」/「總結」且可執行時，先直接詢問是否要同步產出 HTML 視覺版（不論文字長度）
+- 預設使用單文件、可直接開啟的版型，優先參考 `thariq-html-templates` 的 status report / code-review 架構（獨立 CSS、摘要卡片、重點清單、風險標示）
+- 你有明確指定時，會把文字結論與 HTML 視覺版同步輸出。
