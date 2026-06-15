@@ -62,6 +62,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import calendar
+import datetime
 import enum
 import hashlib
 import hmac
@@ -106,6 +108,8 @@ LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 LINE_LOADING_URL = "https://api.line.me/v2/bot/chat/loading/start"
 LINE_CONTENT_URL_FMT = "https://api-data.line.me/v2/bot/message/{message_id}/content"
 LINE_BOT_INFO_URL = "https://api.line.me/v2/bot/info"
+LINE_QUOTA_URL = "https://api.line.me/v2/bot/message/quota"
+LINE_QUOTA_CONSUMPTION_URL = "https://api.line.me/v2/bot/message/quota/consumption"
 
 # LINE Messaging API hard limits
 LINE_PER_BUBBLE_CHARS = 5000  # Hard limit per text message object
@@ -527,6 +531,27 @@ class _LineClient:
         except Exception:
             return None
 
+    async def get_message_quota_status(self) -> Tuple[Dict[str, Any], int]:
+        """Fetch this LINE channel's monthly message quota and usage."""
+        import aiohttp
+        timeout = aiohttp.ClientTimeout(total=10.0)
+        async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
+            async with session.get(LINE_QUOTA_URL, headers=self._headers) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(f"LINE quota {resp.status}: {body[:200]}")
+                quota = await resp.json()
+            async with session.get(LINE_QUOTA_CONSUMPTION_URL, headers=self._headers) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    raise RuntimeError(f"LINE quota consumption {resp.status}: {body[:200]}")
+                consumption = await resp.json()
+        try:
+            used = int(consumption.get("totalUsage") or 0)
+        except (TypeError, ValueError):
+            used = 0
+        return quota, used
+
 
 # ---------------------------------------------------------------------------
 # Message builders
@@ -537,6 +562,48 @@ def _text_message(text: str) -> Dict[str, Any]:
     if len(text) > LINE_PER_BUBBLE_CHARS:
         text = text[: LINE_PER_BUBBLE_CHARS - 1] + "…"
     return {"type": "text", "text": text}
+
+
+def _format_quota_status(quota: Dict[str, Any], used: int) -> str:
+    tz = datetime.timezone(datetime.timedelta(hours=8))
+    now = datetime.datetime.now(tz)
+    days_elapsed = max(now.day, 1)
+    days_in_month = calendar.monthrange(now.year, now.month)[1]
+    days_left = days_in_month - now.day
+    reset_month = 1 if now.month == 12 else now.month + 1
+
+    quota_type = str(quota.get("type") or "")
+    if quota_type == "limited":
+        try:
+            total = int(quota.get("value") or 0)
+        except (TypeError, ValueError):
+            total = 0
+        remain = max(total - used, 0)
+        daily_rate = used / days_elapsed
+        projected = daily_rate * days_in_month
+        pct = projected / total * 100 if total > 0 else 0
+        if total > 0 and projected >= total:
+            pace = "超速，可能超量"
+        elif pct >= 80:
+            pace = "偏快"
+        elif pct <= 40:
+            pace = "偏慢，用量充裕"
+        else:
+            pace = "正常"
+        return (
+            "本月 LINE 推播用量\n"
+            f"已用：{used} / {total}\n"
+            f"剩餘：{remain}\n"
+            f"重置：{days_left} 天後（{reset_month}/1）\n"
+            f"速度：{pace}（照此速度月底約用 {int(projected)} 則）"
+        )
+
+    label = quota_type or "unknown"
+    return (
+        f"LINE 方案：{label}（無上限或未回傳上限）\n"
+        f"本月已用：{used}\n"
+        f"重置：{days_left} 天後"
+    )
 
 
 def _image_message(original_url: str, preview_url: Optional[str] = None) -> Dict[str, Any]:
@@ -968,6 +1035,18 @@ class LineAdapter(BasePlatformAdapter):
             text = f"[location: {title} {address}]".strip()
         else:
             text = f"[unsupported message type: {msg_type}]"
+
+        if msg_type == "text" and text.strip() == "/quota":
+            try:
+                if not self._client:
+                    raise RuntimeError("LINE adapter not connected")
+                quota, used = await self._client.get_message_quota_status()
+                response = _format_quota_status(quota, used)
+            except Exception as exc:
+                logger.exception("LINE: quota check failed")
+                response = f"[查詢失敗] {exc}"
+            await self._send_text_chunks(chat_id, response, force_push=False)
+            return
 
         # Best-effort typing indicator (DM only).
         if chat_type == "dm" and self._client:
