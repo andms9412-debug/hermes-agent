@@ -173,33 +173,27 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // -fast variant carries the same param support as its base.
                 const caps = group.provider.capabilities?.[family.id]
 
-                // Single source of truth for the active row's fast state — keeps
-                // the row label in lock-step with the submenu's Fast toggle and
-                // handles the standalone `-fast` id case.
+                // Effective settings for this row: live session state when it's
+                // the active model, otherwise its remembered preset (Hermes
+                // defaults when unset). Row label AND submenu read from these so
+                // they never disagree.
+                const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
+                const effEffort = isCurrent ? currentReasoningEffort : preset.effort ?? ''
+                const effFast = isCurrent ? currentFastMode : preset.fast ?? false
+
                 const fastControl = resolveFastControl(
                   activeId ?? family.id,
                   group.provider.models ?? [],
                   caps?.fast ?? false,
-                  currentFastMode
+                  effFast
                 )
 
-                // Grayed text: the active row reflects live session state; every
-                // other row shows its remembered preset (Hermes default when
-                // unset) so each model's settings are visible before selecting.
-                const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
-                const meta = isCurrent
-                  ? [
-                      fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
-                  : [
-                      (caps?.fast ?? false) && preset.fast ? copy.fast : null,
-                      (caps?.reasoning ?? true) ? reasoningEffortLabel(preset.effort ?? '') || copy.medium : null
-                    ]
-                      .filter(Boolean)
-                      .join(' ')
+                const meta = [
+                  fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
+                  (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
+                ]
+                  .filter(Boolean)
+                  .join(' ')
 
                 // Every row is a hover-Edit submenu trigger. Activating it
                 // (pointer or keyboard) switches to the family's base model and
@@ -231,10 +225,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>
                     <ModelEditSubmenu
+                      effort={effEffort}
                       fastControl={fastControl}
                       isActive={isCurrent}
                       model={family.id}
-                      onActivate={() => switchTo(family.id, group.provider.slug)}
                       onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
                       provider={group.provider.slug}
                       reasoning={caps?.reasoning ?? true}
