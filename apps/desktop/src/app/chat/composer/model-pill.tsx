@@ -64,7 +64,7 @@ export function ModelPill({ disabled, model }: { disabled: boolean; model: ChatB
           {label}
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64 p-0" side="top" sideOffset={8}>
+      <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
         {model.modelMenuContent}
       </DropdownMenuContent>
     </DropdownMenu>
