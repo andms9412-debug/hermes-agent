@@ -130,8 +130,15 @@ export function ModelEditSubmenu({
 
   const toggleFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
-      // Fast is a separate model id — swap to it (or back to the base).
-      void onSelectModel(enabled ? fastControl.fastId : fastControl.baseId)
+      // Fast is a separate model id. Record the choice on the base model's
+      // preset (selectFamily picks the `-fast` sibling later when set), and
+      // only swap models now if this is the active row — inactive edits must
+      // stay preset-only, same as the param path below.
+      setModelPreset(provider, fastControl.baseId, { fast: enabled })
+
+      if (isActive) {
+        void onSelectModel(enabled ? fastControl.fastId : fastControl.baseId)
+      }
 
       return
     }

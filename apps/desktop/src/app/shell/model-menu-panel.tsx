@@ -89,6 +89,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+
   const effectiveVisibleModels = useMemo(
     () => effectiveVisibleKeys(visibleModels, providers ?? []),
     [visibleModels, providers]
@@ -100,12 +101,18 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   // Selecting a model row restores that model's remembered preset onto the
   // session (effort/fast), gated by capability. Unset → Hermes defaults.
   const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
-    if ((await switchTo(family.id, provider.slug)) === false) {
-      return
-    }
-
     const caps = provider.capabilities?.[family.id]
     const preset = modelPresets[modelPresetKey(provider.slug, family.id)] ?? {}
+
+    // Variant-fast models (no speed param) express "fast" as a separate `-fast`
+    // id, so honor the saved preset by selecting that sibling. Param-fast is
+    // applied via applyModelPreset below instead.
+    const variantFast = !(caps?.fast ?? false) && !!family.fastId
+    const targetId = variantFast && preset.fast === true ? family.fastId! : family.id
+
+    if ((await switchTo(targetId, provider.slug)) === false) {
+      return
+    }
 
     await applyModelPreset(
       {
