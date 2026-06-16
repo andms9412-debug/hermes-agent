@@ -52,11 +52,22 @@ export function setModelPreset(provider: string, model: string, patch: ModelPres
 }
 
 /** Push a model's preset onto the active session (optimistic + gateway). Values
- *  are pre-gated by capability upstream; `undefined` skips that dimension. */
+ *  are pre-gated by capability upstream; `undefined` skips that dimension.
+ *
+ *  No-ops without a real session id: presets apply *onto a live session*, and
+ *  the gateway's `config.set reasoning`/`fast` fall back to persistent
+ *  (global/profile) config when no session matches — so applying on selection
+ *  with no session would silently rewrite `agent.reasoning_effort` /
+ *  `agent.service_tier` (and write `medium`/`normal` even for unset presets).
+ *  Browsing/selecting a model must not mutate global config. */
 export async function applyModelPreset(
   { effort, fast }: ModelPreset,
   ctx: { failMessage: string; request: RequestGateway; sessionId: null | string }
 ): Promise<void> {
+  if (!ctx.sessionId) {
+    return
+  }
+
   if (effort !== undefined) {
     setCurrentReasoningEffort(effort)
   }
@@ -67,11 +78,11 @@ export async function applyModelPreset(
 
   try {
     if (effort !== undefined) {
-      await ctx.request('config.set', { key: 'reasoning', session_id: ctx.sessionId ?? '', value: effort })
+      await ctx.request('config.set', { key: 'reasoning', session_id: ctx.sessionId, value: effort })
     }
 
     if (fast !== undefined) {
-      await ctx.request('config.set', { key: 'fast', session_id: ctx.sessionId ?? '', value: fast ? 'fast' : 'normal' })
+      await ctx.request('config.set', { key: 'fast', session_id: ctx.sessionId, value: fast ? 'fast' : 'normal' })
     }
   } catch (err) {
     notifyError(err, ctx.failMessage)

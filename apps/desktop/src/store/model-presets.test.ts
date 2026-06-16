@@ -22,6 +22,7 @@ describe('model presets', () => {
 
   it('pushes only the provided dimensions to the gateway', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
+
     const request = async <T>(method: string, params?: Record<string, unknown>) => {
       calls.push({ method, params })
 
@@ -32,5 +33,19 @@ describe('model presets', () => {
     await applyModelPreset({}, { failMessage: 'x', request, sessionId: 's1' })
 
     expect(calls).toEqual([{ method: 'config.set', params: { key: 'reasoning', session_id: 's1', value: 'high' } }])
+  })
+
+  it('no-ops without a session so selecting a model cannot mutate global config', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+
+    const request = async <T>(method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      return {} as T
+    }
+
+    await applyModelPreset({ effort: 'high', fast: true }, { failMessage: 'x', request, sessionId: null })
+
+    expect(calls).toEqual([])
   })
 })
