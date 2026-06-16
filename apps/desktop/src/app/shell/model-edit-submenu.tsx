@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
+import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
@@ -80,11 +81,15 @@ interface ModelEditSubmenuProps {
   fastControl: FastControl
   /** Whether this row's model is the active one. */
   isActive: boolean
+  /** This row's model id — edits persist as its global preset. */
+  model: string
   /** Switch to this model (resolves false on failure). Awaited before applying
    *  edits when not active so a failed switch doesn't write to the old model. */
   onActivate: () => Promise<boolean> | void
   /** Switch to a specific model id (used to swap base ⇄ -fast variant). */
   onSelectModel: (model: string) => Promise<boolean> | void
+  /** This row's provider slug — edits persist as its global preset. */
+  provider: string
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -93,8 +98,10 @@ interface ModelEditSubmenuProps {
 export function ModelEditSubmenu({
   fastControl,
   isActive,
+  model,
   onActivate,
   onSelectModel,
+  provider,
   reasoning,
   requestGateway
 }: ModelEditSubmenuProps) {
@@ -134,6 +141,7 @@ export function ModelEditSubmenu({
         session_id: activeSessionId ?? '',
         value: next
       })
+      setModelPreset(provider, model, { effort: next })
     } catch (err) {
       setCurrentReasoningEffort(rollback)
       notifyError(err, copy.updateFailed)
@@ -164,6 +172,7 @@ export function ModelEditSubmenu({
             session_id: activeSessionId ?? '',
             value: enabled ? 'fast' : 'normal'
           })
+          setModelPreset(provider, model, { fast: enabled })
         } catch (err) {
           setCurrentFastMode(!enabled)
           notifyError(err, copy.fastFailed)

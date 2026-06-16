@@ -20,6 +20,7 @@ import { getGlobalModelOptions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
+import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
   $visibleModels,
   collapseModelFamilies,
@@ -63,6 +64,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const currentModel = useStore($currentModel)
   const currentProvider = useStore($currentProvider)
   const currentReasoningEffort = useStore($currentReasoningEffort)
+  const modelPresets = useStore($modelPresets)
   const visibleModels = useStore($visibleModels)
 
   const modelOptions = useQuery({
@@ -94,6 +96,25 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
   const switchTo = (model: string, provider: string) =>
     onSelectModel({ model, persistGlobal: !activeSessionId, provider })
+
+  // Selecting a model row restores that model's remembered preset onto the
+  // session (effort/fast), gated by capability. Unset → Hermes defaults.
+  const selectFamily = async (family: ModelFamily, provider: ModelOptionProvider) => {
+    if ((await switchTo(family.id, provider.slug)) === false) {
+      return
+    }
+
+    const caps = provider.capabilities?.[family.id]
+    const preset = modelPresets[modelPresetKey(provider.slug, family.id)] ?? {}
+
+    await applyModelPreset(
+      {
+        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
+      },
+      { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
+    )
+  }
 
   const groups = useMemo(
     () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
@@ -162,9 +183,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   currentFastMode
                 )
 
-                // Grayed text is live session state only. Do not label inactive
-                // rows as "Fast" just because they have a fast-capable sibling:
-                // that makes an off Fast toggle look like it is already on.
+                // Grayed text: the active row reflects live session state; every
+                // other row shows its remembered preset (Hermes default when
+                // unset) so each model's settings are visible before selecting.
+                const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
                 const meta = isCurrent
                   ? [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
@@ -172,16 +194,21 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     ]
                       .filter(Boolean)
                       .join(' ')
-                  : ''
+                  : [
+                      (caps?.fast ?? false) && preset.fast ? copy.fast : null,
+                      (caps?.reasoning ?? true) ? reasoningEffortLabel(preset.effort ?? '') || copy.medium : null
+                    ]
+                      .filter(Boolean)
+                      .join(' ')
 
                 // Every row is a hover-Edit submenu trigger. Activating it
-                // (pointer or keyboard) switches to the family's base model;
-                // the Fast toggle inside swaps to the -fast sibling (or flips
-                // the speed param). The sub-trigger has no `onSelect`, so wire
-                // both click and Enter/Space for keyboard parity.
+                // (pointer or keyboard) switches to the family's base model and
+                // restores its preset; the Fast toggle inside swaps to the -fast
+                // sibling (or flips the speed param). The sub-trigger has no
+                // `onSelect`, so wire both click and Enter/Space for keyboard parity.
                 const activate = () => {
                   if (!isCurrent) {
-                    void switchTo(family.id, group.provider.slug)
+                    void selectFamily(family, group.provider)
                   }
                 }
 
@@ -206,8 +233,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     <ModelEditSubmenu
                       fastControl={fastControl}
                       isActive={isCurrent}
+                      model={family.id}
                       onActivate={() => switchTo(family.id, group.provider.slug)}
                       onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
+                      provider={group.provider.slug}
                       reasoning={caps?.reasoning ?? true}
                       requestGateway={requestGateway}
                     />
