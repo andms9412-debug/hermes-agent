@@ -1460,7 +1460,19 @@ class GatewayStreamConsumer:
                             self._last_edit_overflowed = True
                             self._message_id = str(result.message_id)
                             self._message_created_ts = time.monotonic()
-                            self._last_sent_text = ""
+                            # The adapter split the *full* accumulated text
+                            # across the original message plus continuation
+                            # messages.  Editing the last continuation with the
+                            # next full accumulated prefix would re-split from
+                            # the beginning and duplicate already-visible
+                            # chunks.  Freeze edit streaming after the first
+                            # overflow and let the final fallback send only the
+                            # tail beyond this delivered prefix.
+                            self._last_sent_text = text
+                            self._fallback_prefix = text
+                            self._fallback_preserve_partial_messages = True
+                            self._fallback_final_send = True
+                            self._edit_supported = False
                             self._notify_new_message()
                         else:
                             self._last_sent_text = text

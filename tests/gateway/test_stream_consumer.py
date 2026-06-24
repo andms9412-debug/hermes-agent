@@ -1109,9 +1109,9 @@ class TestFinalContentDeliveredGuard:
 class TestEditOverflowSplitAndDeliver:
     """When edit_message split-and-delivers an oversized payload across the
     original message + N continuations (Telegram >4096 UTF-16), the consumer
-    must update _message_id to the latest continuation, reset _last_sent_text,
-    and fire on_new_message so subsequent tool-progress bubbles linearize
-    below the new visible message."""
+    must update _message_id to the latest continuation, remember the full
+    visible prefix for fallback-tail de-duplication, and fire on_new_message so
+    subsequent tool-progress bubbles linearize below the new visible message."""
 
     @pytest.mark.asyncio
     async def test_consumer_advances_message_id_on_split_and_deliver(self):
@@ -1149,8 +1149,12 @@ class TestEditOverflowSplitAndDeliver:
         assert ok is True
         # Consumer advanced to the latest continuation id.
         assert consumer._message_id == "msg_continuation_2"
-        # Skip-if-same cache reset so the next edit doesn't false-positive.
-        assert consumer._last_sent_text == ""
+        # Remember the whole visible prefix so future fallback delivery sends
+        # only the new tail instead of editing/splitting from the beginning
+        # again and duplicating the continuation chunks.
+        assert consumer._last_sent_text == "new full text after overflow"
+        assert consumer._fallback_prefix == "new full text after overflow"
+        assert consumer._edit_supported is False
         # on_new_message fired so the tool-progress bubble breaks below
         # the new continuation (per the openclaw #32535 lesson).
         assert new_msg_count[0] == 1
@@ -1313,6 +1317,47 @@ class TestCancelledConsumerSetsFlags:
         # Without a successful send, final_response_sent should stay False
         # so the normal gateway send path can deliver the response.
         assert consumer.final_response_sent is False
+
+
+class TestOverflowSplitDedup:
+    """Oversized streaming edits must not duplicate continuation chunks."""
+
+    @pytest.mark.asyncio
+    async def test_successful_overflow_freezes_edits_and_fallback_sends_only_tail(self):
+        adapter = MagicMock()
+        adapter.MAX_MESSAGE_LENGTH = 20
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_tail"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="msg_2",
+            continuation_message_ids=("msg_2",),
+        ))
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+
+        delivered_prefix = "A" * 30
+        final_text = delivered_prefix + "TAIL"
+
+        assert await consumer._send_or_edit("hello") is True
+        assert await consumer._send_or_edit(delivered_prefix) is True
+
+        # The overflow edit already delivered delivered_prefix across msg_1 + msg_2.
+        # A later finalization must not edit msg_2 with the full final_text,
+        # because Telegram would split from the beginning again and duplicate
+        # delivered_prefix on screen.
+        assert consumer._edit_supported is False
+        assert consumer._fallback_prefix == delivered_prefix
+
+        await consumer._send_fallback_final(final_text)
+
+        adapter.edit_message.assert_called_once()
+        fallback_sends = adapter.send.call_args_list[1:]
+        assert [call.kwargs["content"] for call in fallback_sends] == ["TAIL"]
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
 
 
 # ── Think-block filtering unit tests ─────────────────────────────────────

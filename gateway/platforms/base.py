@@ -3438,7 +3438,7 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
-        result = await self.send(
+        result = await self._send_once_with_timeout(
             chat_id=chat_id,
             content=content,
             reply_to=reply_to,
@@ -3465,7 +3465,7 @@ class BasePlatformAdapter(ABC):
                     self.name, attempt, max_retries, delay, error_str,
                 )
                 await asyncio.sleep(delay)
-                result = await self.send(
+                result = await self._send_once_with_timeout(
                     chat_id=chat_id,
                     content=content,
                     reply_to=reply_to,
@@ -3485,14 +3485,19 @@ class BasePlatformAdapter(ABC):
                     "Please try again \u2014 your request was processed but the response could not be sent."
                 )
                 try:
-                    await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
+                    await self._send_once_with_timeout(
+                        chat_id=chat_id,
+                        content=notice,
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
                 return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
-        fallback_result = await self.send(
+        fallback_result = await self._send_once_with_timeout(
             chat_id=chat_id,
             content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
             reply_to=reply_to,
@@ -3501,6 +3506,43 @@ class BasePlatformAdapter(ABC):
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
+
+    async def _send_once_with_timeout(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+    ) -> "SendResult":
+        """Run one platform send with a hard timeout.
+
+        A timed-out send is delivery-ambiguous, so callers must not retry or
+        fallback-send the same content. Returning a timeout-shaped failure lets
+        _send_with_retry preserve that rule while unwinding typing cleanup.
+        """
+        timeout = _float_env("HERMES_PLATFORM_SEND_TIMEOUT_SECONDS", 45.0)
+        try:
+            if timeout <= 0:
+                return await self.send(
+                    chat_id=chat_id,
+                    content=content,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            return await asyncio.wait_for(
+                self.send(
+                    chat_id=chat_id,
+                    content=content,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            error = f"ReadTimeout: platform send timed out after {timeout:.1f}s"
+            logger.error("[%s] %s", self.name, error)
+            return SendResult(success=False, error=error, retryable=False)
 
     @staticmethod
     def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
