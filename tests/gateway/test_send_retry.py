@@ -8,6 +8,7 @@ Verifies that:
 - Successful sends on retry return success
 - SendResult.retryable flag is respected
 """
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -189,6 +190,30 @@ class TestSendWithRetryNetworkRetry:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert result.success
         assert len(adapter._send_calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_send_timeout_is_not_retried_or_fallback_sent(self, monkeypatch):
+        """A hung send is delivery-ambiguous, so do not resend the content."""
+        monkeypatch.setenv("HERMES_PLATFORM_SEND_TIMEOUT_SECONDS", "0.01")
+        adapter = _StubAdapter()
+
+        async def hanging_send(chat_id, content, reply_to=None, metadata=None, **kwargs):
+            adapter._send_calls.append((chat_id, content))
+            await asyncio.Event().wait()
+            return SendResult(success=True, message_id="late")
+
+        adapter.send = hanging_send
+        result = await adapter._send_with_retry(
+            "chat1",
+            "hello",
+            max_retries=2,
+            base_delay=0,
+        )
+
+        assert not result.success
+        assert result.retryable is False
+        assert "timed out" in result.error.lower()
+        assert len(adapter._send_calls) == 1
 
     @pytest.mark.asyncio
     async def test_network_to_nonnetwork_transition_falls_back_to_plaintext(self):
