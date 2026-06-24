@@ -111,6 +111,39 @@ docs/superpowers/*
 # logs, and per-session caches are never artifacts of the codebase.
 .hermes/
 
+# Local Hermes runtime files. These normally live in ~/.hermes, but can appear in
+# the checkout root during local installs, launches, or manual debugging.
+/.install_method
+/SOUL.md
+/.env.bak*
+/auth.json
+/auth.lock
+/channel_directory.json
+/config.yaml
+/config.yml
+/config.yaml.bak*
+/config.yml.bak*
+/context_length_cache.yaml
+/gateway.lock
+/gateway.pid
+/gateway_state.json
+/kanban.db*
+/models_dev_cache.json
+/state.db*
+/audio_cache/
+/cache/
+/image_cache/
+/memories/
+/pairing/
+/sandboxes/
+/sessions/
+/hooks/
+/cron/*.lock
+/cron/output/
+/skills/.bundled_manifest
+/skills/.curator_state
+/skills/.usage.json*
+
 # Desktop/bootstrap install marker written into the managed checkout root by the
 # bootstrap installer. It is Hermes-managed runtime state, never a code change —
 # ignore it so `hermes update`'s `git stash push --include-untracked` does not
