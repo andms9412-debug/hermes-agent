@@ -933,6 +933,12 @@ class LineAdapter(BasePlatformAdapter):
             self.webhook_path,
             f" (public: {self.public_base_url})" if self.public_base_url else "",
         )
+        logger.info(
+            "LINE: slow-button config threshold=%.1fs button_label=%r pending_text=%r",
+            self.slow_response_threshold,
+            self.button_label,
+            self.pending_text,
+        )
         return True
 
     async def disconnect(self) -> None:
@@ -1143,6 +1149,13 @@ class LineAdapter(BasePlatformAdapter):
             return
 
         entry = self._cache.get(request_id)
+        logger.info(
+            "LINE: postback show_response chat=%s request_id=%s state=%s has_reply_token=%s",
+            chat_id,
+            request_id,
+            entry.state.value if entry else "missing",
+            bool(reply_token),
+        )
         if not self._client or not reply_token or not entry:
             return
 
@@ -1152,12 +1165,22 @@ class LineAdapter(BasePlatformAdapter):
             messages = [_text_message(c) for c in chunks][:LINE_MAX_MESSAGES_PER_CALL]
             try:
                 await self._client.reply(reply_token, messages)
+                logger.info(
+                    "LINE: postback delivered cached response chat=%s request_id=%s",
+                    chat_id,
+                    request_id,
+                )
                 self._cache.mark_delivered(request_id)
                 self._pending_buttons.pop(chat_id, None)
             except Exception as exc:
                 logger.warning("LINE: postback reply failed (%s); falling back to push", exc)
                 try:
                     await self._client.push(chat_id, messages)
+                    logger.info(
+                        "LINE: postback push-delivered cached response chat=%s request_id=%s",
+                        chat_id,
+                        request_id,
+                    )
                     self._cache.mark_delivered(request_id)
                     self._pending_buttons.pop(chat_id, None)
                 except Exception as exc2:
@@ -1179,6 +1202,11 @@ class LineAdapter(BasePlatformAdapter):
             # Still working — re-issue the wait notice.
             try:
                 await self._client.reply(reply_token, [_text_message(self.pending_text)])
+                logger.info(
+                    "LINE: postback still pending chat=%s request_id=%s",
+                    chat_id,
+                    request_id,
+                )
             except Exception:
                 pass
 
@@ -1245,9 +1273,37 @@ class LineAdapter(BasePlatformAdapter):
         pending_rid = self._pending_buttons.get(chat_id)
         if pending_rid:
             self._cache.set_ready(pending_rid, content)
+            logger.info(
+                "LINE: cached slow response ready chat=%s request_id=%s chars=%d",
+                chat_id,
+                pending_rid,
+                len(content or ""),
+            )
             return SendResult(success=True, message_id=pending_rid)
 
         return await self._send_text_chunks(chat_id, content, force_push=False)
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Suppress transient gateway status bubbles on LINE.
+
+        LINE has no editable status-bubble primitive. Routing gateway status
+        callbacks through ``send()`` burns the single-use reply token before the
+        slow-response postback threshold fires, which breaks the quota-saving
+        "繼續" button flow. Keep these callbacks silent on LINE and reserve the
+        reply token for either the slow-button bubble or the final answer.
+        """
+        logger.debug(
+            "LINE: suppressing transient status bubble chat=%s key=%s",
+            chat_id,
+            status_key,
+        )
+        return SendResult(success=True, message_id=None)
 
     async def _send_text_chunks(
         self,
@@ -1289,7 +1345,10 @@ class LineAdapter(BasePlatformAdapter):
         if not entry:
             return "", False
         token, expires_at = entry
-        if not token or time.time() >= expires_at:
+        now = time.time()
+        if not token:
+            return "", False
+        if now >= expires_at:
             return "", False
         return token, True
 
@@ -1341,13 +1400,33 @@ class LineAdapter(BasePlatformAdapter):
             # Only fire if we still have a usable reply token. If the agent
             # already responded, _consume_reply_token has cleared it.
             if chat_id not in self._reply_tokens:
+                logger.info(
+                    "LINE: skip slow-LLM postback for chat %s: no stashed reply token",
+                    chat_id,
+                )
                 return
             if chat_id in self._pending_buttons:
+                existing_rid = self._pending_buttons.get(chat_id, "")
+                existing_state = None
+                if existing_rid:
+                    entry = self._cache.get(existing_rid)
+                    existing_state = entry.state.value if entry else "missing"
+                logger.info(
+                    "LINE: skip slow-LLM postback for chat %s: pending button already exists request_id=%s state=%s",
+                    chat_id,
+                    existing_rid,
+                    existing_state,
+                )
                 return
             rid = self._cache.register_pending(chat_id)
             self._pending_buttons[chat_id] = rid
             token, used = self._consume_reply_token(chat_id)
             if not used:
+                logger.info(
+                    "LINE: skip slow-LLM postback for chat %s: reply token missing or expired at fire time request_id=%s",
+                    chat_id,
+                    rid,
+                )
                 self._pending_buttons.pop(chat_id, None)
                 return
             msg = build_postback_button_message(
@@ -1355,9 +1434,18 @@ class LineAdapter(BasePlatformAdapter):
             )
             try:
                 await self._client.reply(token, [msg])
-                logger.info("LINE: sent slow-LLM postback button for chat %s (rid=%s)", chat_id, rid)
+                logger.info(
+                    "LINE: sent slow-LLM postback button for chat %s request_id=%s",
+                    chat_id,
+                    rid,
+                )
             except Exception as exc:
-                logger.warning("LINE: postback button send failed: %s", exc)
+                logger.warning(
+                    "LINE: postback button send failed for chat %s request_id=%s: %s",
+                    chat_id,
+                    rid,
+                    exc,
+                )
                 self._pending_buttons.pop(chat_id, None)
 
         post_task = asyncio.create_task(_fire_postback())
