@@ -5827,6 +5827,10 @@ class BasePlatformAdapter(ABC):
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
         typing_task: Optional[asyncio.Task] = None
+        _trace_typing_lifecycle = self.platform == Platform.TELEGRAM
+        _typing_trace_id = "none"
+        _typing_cleanup_requested = False
+        _typing_cleanup_warning_emitted = False
         if getattr(self.config, "typing_indicator", True):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
             try:
@@ -5842,12 +5846,78 @@ class BasePlatformAdapter(ABC):
                 )
             )
 
+            # Telegram exposes no stop-typing API, so a refresh task that
+            # outlives its message turn is otherwise invisible from logs.  A
+            # start/done pair lets incident capture distinguish a live orphan
+            # from a client-side stale bubble without logging every 2s tick.
+            if _trace_typing_lifecycle:
+                _typing_trace_id = f"{id(typing_task):x}"
+                try:
+                    typing_task.set_name(
+                        f"telegram-typing:{session_key}:{_typing_trace_id}"
+                    )
+                except (AttributeError, TypeError):
+                    pass
+                logger.info(
+                    "[%s] typing_refresh lifecycle=start session=%s chat=%s trace=%s",
+                    self.name,
+                    session_key,
+                    event.source.chat_id,
+                    _typing_trace_id,
+                )
+
+                def _log_typing_task_done(done_task: asyncio.Task) -> None:
+                    if done_task.cancelled():
+                        state = "cancelled"
+                    else:
+                        try:
+                            task_error = done_task.exception()
+                        except asyncio.CancelledError:
+                            state = "cancelled"
+                        except Exception as state_error:
+                            state = f"unknown:{type(state_error).__name__}"
+                        else:
+                            state = (
+                                f"failed:{type(task_error).__name__}"
+                                if task_error is not None
+                                else "completed"
+                            )
+                    logger.info(
+                        "[%s] typing_refresh lifecycle=done session=%s chat=%s "
+                        "trace=%s state=%s cleanup_requested=%s",
+                        self.name,
+                        session_key,
+                        event.source.chat_id,
+                        _typing_trace_id,
+                        state,
+                        _typing_cleanup_requested,
+                    )
+
+                typing_task.add_done_callback(_log_typing_task_done)
+
         async def _stop_typing_task() -> None:
+            nonlocal _typing_cleanup_requested, _typing_cleanup_warning_emitted
+            _typing_cleanup_requested = True
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
                 metadata=_thread_metadata,
             )
+            if (
+                _trace_typing_lifecycle
+                and typing_task is not None
+                and not typing_task.done()
+                and not _typing_cleanup_warning_emitted
+            ):
+                _typing_cleanup_warning_emitted = True
+                logger.warning(
+                    "[%s] typing_refresh lifecycle=cleanup_returned_live "
+                    "session=%s chat=%s trace=%s",
+                    self.name,
+                    session_key,
+                    event.source.chat_id,
+                    _typing_trace_id,
+                )
         
         try:
             await self._run_processing_hook("on_processing_start", event)

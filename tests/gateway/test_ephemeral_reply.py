@@ -21,6 +21,7 @@ Covered:
 """
 
 import asyncio
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -246,3 +247,84 @@ async def test_process_message_incapable_platform_does_not_schedule_delete():
     assert delete_calls == []
 
 
+@pytest.mark.asyncio
+async def test_process_new_logs_balanced_telegram_typing_lifecycle(caplog):
+    """A normal /new turn must leave a matched start/done trace pair."""
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-new")
+    )
+    typing_started = asyncio.Event()
+
+    async def _keep_typing_until_cancelled(*_args, **_kwargs):
+        typing_started.set()
+        await asyncio.Event().wait()
+
+    async def _handler(_event):
+        await typing_started.wait()
+        return EphemeralReply("✨ New session started!", ttl_seconds=0)
+
+    adapter._keep_typing = _keep_typing_until_cancelled  # type: ignore[method-assign]
+    adapter.set_message_handler(_handler)
+    event = _make_event(text="/new")
+    session_key = "agent:main:telegram:private:42"
+    caplog.set_level(logging.INFO, logger="gateway.platforms.base")
+
+    await adapter._process_message_background(event, session_key)
+    await asyncio.sleep(0)
+
+    lifecycle = [
+        record.getMessage()
+        for record in caplog.records
+        if "typing_refresh lifecycle=" in record.getMessage()
+    ]
+    starts = [message for message in lifecycle if "lifecycle=start" in message]
+    dones = [message for message in lifecycle if "lifecycle=done" in message]
+    assert len(starts) == 1
+    assert len(dones) == 1
+    start_trace = starts[0].split("trace=", 1)[1].split()[0]
+    done_trace = dones[0].split("trace=", 1)[1].split()[0]
+    assert start_trace == done_trace
+    assert "cleanup_requested=True" in dones[0]
+    assert not any("cleanup_returned_live" in message for message in lifecycle)
+
+
+@pytest.mark.asyncio
+async def test_process_new_warns_when_typing_task_survives_cleanup(caplog):
+    """A cleanup boundary that returns with a live task must be visible."""
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-new")
+    )
+    typing_started = asyncio.Event()
+    release_typing = asyncio.Event()
+    typing_tasks: list[asyncio.Task] = []
+
+    async def _keep_typing_until_released(*_args, **_kwargs):
+        typing_tasks.append(asyncio.current_task())
+        typing_started.set()
+        await release_typing.wait()
+
+    async def _handler(_event):
+        await typing_started.wait()
+        return EphemeralReply("✨ New session started!", ttl_seconds=0)
+
+    adapter._keep_typing = _keep_typing_until_released  # type: ignore[method-assign]
+    adapter._stop_typing_refresh = AsyncMock()  # type: ignore[method-assign]
+    adapter.set_message_handler(_handler)
+    event = _make_event(text="/new")
+    session_key = "agent:main:telegram:private:42"
+    caplog.set_level(logging.INFO, logger="gateway.platforms.base")
+
+    try:
+        await adapter._process_message_background(event, session_key)
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if "typing_refresh lifecycle=cleanup_returned_live" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+    finally:
+        release_typing.set()
+        if typing_tasks:
+            await typing_tasks[0]
