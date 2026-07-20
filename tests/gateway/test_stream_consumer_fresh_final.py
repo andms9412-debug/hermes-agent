@@ -11,12 +11,20 @@ time instead of first-token time.
 from __future__ import annotations
 
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+
+
+def _mark_preview_stale(consumer: GatewayStreamConsumer) -> None:
+    """Age a preview past its threshold without assuming host uptime."""
+    consumer._message_created_ts = (
+        time.monotonic() - consumer.cfg.fresh_final_after_seconds - 1.0
+    )
 
 
 def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
@@ -53,7 +61,7 @@ class TestFreshFinalForLongLivedPreviews:
         )
         await consumer._send_or_edit("hello")
         # Pretend the preview has been visible for a long time.
-        consumer._message_created_ts = 0.0  # far in the past
+        _mark_preview_stale(consumer)
         await consumer._send_or_edit("hello world", finalize=True)
         # Should edit, not send a fresh message.
         assert adapter.send.call_count == 1  # only the initial send
@@ -89,7 +97,7 @@ class TestFreshFinalForLongLivedPreviews:
         )
         await consumer._send_or_edit("hello")
         # Force the preview to look stale (visible for > 60s).
-        consumer._message_created_ts = 0.0  # zero = ~uptime seconds old
+        _mark_preview_stale(consumer)
         await consumer._send_or_edit("hello world", finalize=True)
         # Fresh send happened; no edit of the old preview.
         assert adapter.send.call_count == 2
@@ -114,7 +122,7 @@ class TestFreshFinalForLongLivedPreviews:
             config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
         )
         await consumer._send_or_edit("hello")
-        consumer._message_created_ts = 0.0
+        _mark_preview_stale(consumer)
         await consumer._send_or_edit("hello world", finalize=True)
         assert adapter.send.call_count == 2
         adapter.edit_message.assert_not_called()
@@ -135,7 +143,7 @@ class TestFreshFinalForLongLivedPreviews:
             config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
         )
         await consumer._send_or_edit("hello")
-        consumer._message_created_ts = 0.0
+        _mark_preview_stale(consumer)
         ok = await consumer._send_or_edit("hello world", finalize=True)
         # Fresh send was attempted and failed → edit happened instead.
         assert adapter.send.call_count == 2
@@ -152,7 +160,7 @@ class TestFreshFinalForLongLivedPreviews:
             config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
         )
         await consumer._send_or_edit("hello")
-        consumer._message_created_ts = 0.0  # stale
+        _mark_preview_stale(consumer)
         await consumer._send_or_edit("hello partial")  # no finalize
         assert adapter.send.call_count == 1
         adapter.edit_message.assert_called_once()
@@ -454,7 +462,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
         consumer.on_delta("Reply with **bold** and `code` markers.")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
-        consumer._message_created_ts = 0.0  # force the preview stale
+        _mark_preview_stale(consumer)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
