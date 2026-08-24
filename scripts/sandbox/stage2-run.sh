@@ -196,6 +196,11 @@ if [ "$DEV_SANDBOX_INTERACTIVE" = true ]; then
   dev_mounts=(--dev /dev)
 fi
 
+# HTTPS clients inside the sandbox connect through proxy.py. It signs the
+# intercepted leaf certificates with ca.pem, while real-ca.pem is only used by
+# the proxy's own upstream TLS connection. Node therefore needs ca.pem as its
+# extra trust anchor. Keep npm debug logs in /work/logs so failure artifacts
+# preserve the actual registry/TLS error.
 exec bwrap \
   --unshare-pid \
   --die-with-parent --proc /proc --tmpfs /tmp \
@@ -216,7 +221,8 @@ exec bwrap \
   --setenv CURL_CA_BUNDLE /work/certs/ca.pem \
   --setenv SSL_CERT_FILE /work/certs/ca.pem \
   --setenv GIT_SSL_CAINFO /work/certs/ca.pem \
-  --setenv NODE_EXTRA_CA_CERTS /work/certs/real-ca.pem \
+  --setenv NODE_EXTRA_CA_CERTS /work/certs/ca.pem \
+  --setenv npm_config_logs_dir /work/logs/npm \
   --setenv OPENSSL_CONF /work/certs/openssl.cnf \
   --setenv HTTP_PROXY http://127.0.0.1:8080 \
   --setenv HTTPS_PROXY http://127.0.0.1:8080 \
