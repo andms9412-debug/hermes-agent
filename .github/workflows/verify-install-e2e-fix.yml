@@ -1,0 +1,26 @@
+name: Verify installer E2E fix
+
+on:
+  push:
+    branches:
+      - fix/install-update-e2e-sandbox
+
+permissions:
+  contents: read
+
+jobs:
+  installer-newest:
+    name: installer from v2026.6.5
+    uses: ./.github/workflows/install-e2e-run.yml
+    with:
+      route: installer
+      install-ref: v2026.6.5
+      timeout-minutes: 45
+
+  installer-oldest:
+    name: installer from v2026.3.12
+    uses: ./.github/workflows/install-e2e-run.yml
+    with:
+      route: installer
+      install-ref: v2026.3.12
+      timeout-minutes: 45
