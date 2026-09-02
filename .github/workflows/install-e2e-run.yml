@@ -94,6 +94,11 @@ jobs:
           # copy into a fresh fake-main commit on every invocation, moving the
           # update target mid-run.
           HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          # The full checkout above already contains the sampled release tags.
+          # Reuse those local refs instead of anonymously fetching the public
+          # upstream once per matrix leg, which can trip GitHub's HTTP 429
+          # anti-abuse rate limit when several E2E legs start together.
+          HERMES_DEV_SANDBOX_UPSTREAM: ${{ github.workspace }}
 
       # Artifact names cannot contain '/', and install-ref may be a full ref
       # like refs/heads/main. GitHub Actions expressions have no string-replace
